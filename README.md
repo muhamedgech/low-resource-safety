@@ -1,4 +1,4 @@
-# Official Repository for "Low-Resource Safety Failures Are Action Failures, Not Representation Failures"
+# Official Repository for "Low-Resource Safety Failures Are Action Failures, Not Representation Failures" [EMNLP 26' Findings] 
 
 [![arXiv](https://img.shields.io/badge/arXiv-2606.01196-b31b1b.svg)](https://arxiv.org/abs/2606.01196)
 
