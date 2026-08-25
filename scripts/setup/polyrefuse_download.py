@@ -69,8 +69,10 @@ def vendor(dest: Path, force: bool = False) -> None:
         en_source_files = {
             ("harmful", "train"): "harmful_train.json",
             ("harmful", "val"): "harmful_val.json",
+            ("harmful", "test"): "harmful_test.json",
             ("harmless", "train"): "harmless_train_200_sampled.json",
             ("harmless", "val"): "harmless_val_200_sampled.json",
+            ("harmless", "test"): "harmless_test_500_sampled.json",
         }
         for (subset, split), src_name in en_source_files.items():
             shutil.copy2(en_originals / src_name, dest / f"{subset}_{split}_translated_en.json")

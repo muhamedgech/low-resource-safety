@@ -178,3 +178,63 @@ uv run python scripts/routing_refusal/run_cast_steering.py
 Use `intervention=directional_ablation`, `intervention=conditional_vhrl`, `intervention=adasteer`, or `intervention=adasteer_adapted` with `intervene_and_generate.py`.
 
 Configs: `configs/routing_refusal/` and `configs/intervention/`.
+
+### 7. Fixed-Length Intervention Overhead
+
+Prepare PolyRefuse:
+
+```bash
+uv run python scripts/setup/polyrefuse_download.py --dest data/polyrefuse
+for language in sw am my km si; do
+  uv run python scripts/setup/polyrefuse_translate.py \
+    --target-language "$language"
+done
+```
+
+Prepare the Qwen2.5-7B-Instruct artifacts:
+
+```bash
+uv run python scripts/hrl_direction/extract_activations.py \
+  'dataset.languages=[en,de,fr,es,it,nl,pl,ru,zh,ja,sw,am,my,km,si,yo]' \
+  'dataset.splits=[train]' \
+  'extraction.layers=[15]'
+uv run python scripts/hrl_direction/compute_hrl_pooled_dim_direction.py
+uv run python scripts/routing_refusal/compute_adapted_adasteer_vectors.py
+```
+
+Run the benchmark on one GPU:
+
+```bash
+uv run python scripts/routing_refusal/benchmark_intervention_overhead.py \
+  --model-config qwen2.5-7b-instruct \
+  --samples-per-cell 16 \
+  --batch-size 4 \
+  --new-tokens 128 \
+  --repeats 3
+```
+
+Defaults:
+
+- Dataset: PolyRefuse test split
+- Languages: Swahili, Amharic, Burmese, Khmer, Sinhala, and Yoruba
+- Samples: 16 per language and subset
+- Batch size: 4
+- Generation length: 128 tokens
+- Repeats: 3
+- Methods: base model, LRL+32, adapted CAST, and adapted AdaSteer
+
+The benchmark fits the rank-10 LRL+32 gate and adapted CAST before timing. It
+writes summary statistics and raw batch timings to
+`artifacts/benchmarks/intervention_overhead/qwen2.5-7b-instruct.json`.
+
+Model settings:
+
+| Model config | Activation layer |
+|---|---:|
+| `qwen2.5-7b-instruct` | 15 |
+| `gemma-2-9b-it` | 20 |
+| `llama-3.1-8b-instruct` | 10 |
+
+For Gemma or Llama, add `model=<model-config>` to each preparation command, set
+`extraction.layers` to the table value, and pass the same model config to
+`--model-config`.
