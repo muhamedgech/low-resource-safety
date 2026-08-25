@@ -175,7 +175,7 @@ def build_configs(args: argparse.Namespace) -> tuple[DictConfig, DictConfig, dic
     gate_cfg.rank = int(args.rank)
     gate_cfg.budget = int(args.budget_per_class)
     gate_cfg.seed = int(args.seed)
-    gate_cfg.probe_device = "cpu"
+    gate_cfg.probe_device = "cuda"
     if args.layer is not None:
         gate_cfg.layer = int(args.layer)
     cast_cfg.cast.variant = "cast_adapted"

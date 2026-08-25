@@ -197,7 +197,8 @@ Prepare the Qwen2.5-7B-Instruct artifacts:
 uv run python scripts/hrl_direction/extract_activations.py \
   'dataset.languages=[en,de,fr,es,it,nl,pl,ru,zh,ja,sw,am,my,km,si,yo]' \
   'dataset.splits=[train]' \
-  'extraction.layers=[15]'
+  'extraction.layers=[15]' \
+  'extraction.token_positions=[t_post_inst]'
 uv run python scripts/hrl_direction/compute_hrl_pooled_dim_direction.py
 uv run python scripts/routing_refusal/compute_adapted_adasteer_vectors.py
 ```
