@@ -65,27 +65,48 @@ def balanced_indices(n_h, n_n, k, seed):
     return g.choice(n_h, k, replace=False), g.choice(n_n, k, replace=False)
 
 
-def run(cache, source_lang, target_langs, layer, alpha_miss, alpha_flag, seeds, seed_offset):
+def run(cache, source_lang, target_langs, layer, alpha_miss, alpha_flag, seeds, seed_offset, n_cal=100):
+    """Both methods averaged over seeds on the SAME calibration/test split each seed.
+
+    We pool all of a language's harmful and harmless scores, then per seed carve out a
+    calibration set (n_cal per class) and use the rest as the test set. PACT sets a
+    conformal threshold on the calibration set (0 labels beyond the transported class);
+    few-shot picks k of those same calibration points per class and sets a macro-F1
+    threshold. Averaging over seeds is what makes PACT's guarantee visible: its MEAN
+    miss should sit near alpha_miss, however weak the underlying score is.
+    """
     scores = english_probe_scores(cache, source_lang, target_langs, ["train", "val", "test"], layer, seed_offset)
     rows = []
     for lang in target_langs:
-        h_tr, n_tr = scores[(lang, "train")]      # pool the few-shot examples are drawn from
-        h_cal, n_cal = scores[(lang, "val")]      # PACT calibration split (transported labels)
-        h_te, n_te = scores[(lang, "test")]       # held-out evaluation
-        # PACT: 0 labels, conformal thresholds on the calibration split.
-        tau_pass = conformal.pass_threshold(h_cal, alpha_miss)      # harmful high; PASS/miss if below
-        pact = gate_metrics(tau_pass, h_te, n_te)
-        rows.append(dict(lang=lang, method="pact", budget=0, seed=-1, label_cost=0, **pact))
-        # Few-shot: k labels/class, macro-F1 threshold, over seeds.
-        for k in BUDGETS:
-            if k > min(len(h_tr), len(n_tr)):
-                continue
-            for s in range(seeds):
-                hi, ni = balanced_indices(len(h_tr), len(n_tr), k, seed_offset + s)
-                thr = fewshot_threshold(h_tr[hi], n_tr[ni])
-                fs = gate_metrics(thr, h_te, n_te)
-                rows.append(dict(lang=lang, method="fewshot", budget=k, seed=s, label_cost=2 * k, **fs))
+        H = np.concatenate([scores[(lang, s)][0] for s in ("train", "val", "test")])  # harmful
+        N = np.concatenate([scores[(lang, s)][1] for s in ("train", "val", "test")])  # harmless
+        cal_n = min(n_cal, len(H) // 2, len(N) // 2)
+        auc_lang = round(_auc(H, N), 4)   # discrimination of the transported score in this language
+        for s in range(seeds):
+            rng = np.random.default_rng(seed_offset + s)
+            hi, ni = rng.permutation(len(H)), rng.permutation(len(N))
+            cal_H, test_H = H[hi[:cal_n]], H[hi[cal_n:]]
+            cal_N, test_N = N[ni[:cal_n]], N[ni[cal_n:]]
+            # PACT: conformal thresholds on the calibration set, 0 target labels.
+            tau_pass = conformal.pass_threshold(cal_H, alpha_miss)   # harmful high; PASS/miss if below
+            rows.append(dict(lang=lang, method="pact", budget=0, seed=s, label_cost=0, auc=auc_lang,
+                             **gate_metrics(tau_pass, test_H, test_N)))
+            # Few-shot: k of those calibration points per class, macro-F1 threshold.
+            for k in BUDGETS:
+                if k > min(len(cal_H), len(cal_N)):
+                    continue
+                thr = fewshot_threshold(cal_H[rng.choice(len(cal_H), k, replace=False)],
+                                        cal_N[rng.choice(len(cal_N), k, replace=False)])
+                rows.append(dict(lang=lang, method="fewshot", budget=k, seed=s, label_cost=2 * k, auc=auc_lang,
+                                 **gate_metrics(thr, test_H, test_N)))
     return rows
+
+
+def _auc(harmful, harmless):
+    """P(harmful score > harmless score); 0.5 = chance."""
+    from sklearn.metrics import roc_auc_score
+    y = np.r_[np.ones(len(harmful)), np.zeros(len(harmless))]
+    return float(roc_auc_score(y, np.r_[harmful, harmless]))
 
 
 def summarize(rows):
@@ -95,7 +116,7 @@ def summarize(rows):
     for r in rows:
         groups[(r["method"], r["lang"], r["budget"])].append(r["miss_rate"])
     out = []
-    for (method, lang, budget), miss in sorted(groups.items()):
+    for (method, lang, budget), miss in sorted(groups.items(), key=lambda kv: (kv[0][1], kv[0][0], kv[0][2])):
         arr = np.array(miss)
         out.append(dict(method=method, lang=lang, budget=budget, n=len(arr),
                         miss_mean=round(float(arr.mean()), 4),
