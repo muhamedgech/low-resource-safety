@@ -80,53 +80,61 @@ def certify(s, y, cal, test, alpha_miss, alpha_flag):
 
 
 def run(cache, target_langs, alpha_miss, alpha_flag, seeds, seed_offset, n_cal, k_pc, C):
+    """Per seed, split each language into fit / cal / test (40/30/30) stratified by class.
+
+    TT and A2 are trained on FIT only; A0 is trained on English (a separate population).
+    Thresholds are calibrated on CAL; AUC and miss/flag are measured on TEST. This removes
+    the train-on-test leakage that otherwise makes TT look perfect.
+    """
     Xen, yen, _ = stacked(cache, "en")
-    # Train on the SAFE class (1 = harmless) so score = -P(safe) is HIGH for harmful
-    # (refusal-worthy), matching the certificate's "refuse class = harmful".
-    a0 = fit_probe(Xen, 1 - yen, C)                   # English probe (shared across languages)
+    a0 = fit_probe(Xen, 1 - yen, C)                   # English probe (no target leakage)
     rows = []
     for lang in target_langs:
         X, y, _ = stacked(cache, lang)
-        tt = fit_probe(X, 1 - y, C)                   # translate-train probe (target language)
-        a2 = fit_procrustes(Xen, X, 1 - yen, k_pc, C)  # rows parallel by index (en[i] ~ X[i])
-        method_scores = {"a0": a0.score(X), "tt": tt.score(X), "a2": a2.score(X)}
-        aucs = {m: round(auc(s, y), 4) for m, s in method_scores.items()}
         n = len(y)
         idx_ref = np.flatnonzero(y == 1)
         idx_com = np.flatnonzero(y == 0)
-        cal_ref_n = min(n_cal, len(idx_ref) // 2)
-        cal_com_n = min(n_cal, len(idx_com) // 2)
         for seed in range(seeds):
             rng = np.random.default_rng(seed_offset + seed)
-            ref = rng.permutation(idx_ref)
-            com = rng.permutation(idx_com)
-            cal = np.zeros(n, bool)
-            test = np.zeros(n, bool)
-            cal[ref[:cal_ref_n]] = True
-            cal[com[:cal_com_n]] = True
-            test[ref[cal_ref_n:]] = True
-            test[com[cal_com_n:]] = True
-            for m, s in method_scores.items():
-                c = certify(s, y, cal, test, alpha_miss, alpha_flag)
-                rows.append({"lang": lang, "method": m, "budget": 0, "auc": aucs[m], **c})
-            # few-shot baseline on the best score (TT), for comparison at equal footing
-            s_tt = method_scores["tt"]
-            cal_H = s_tt[test & (y == 1)]  # note: few-shot draws its few labels from the test-side pool below
+            fit, cal, test = _split(n, idx_ref, idx_com, rng)   # boolean masks, disjoint
+            # TT and A2 see only the fit rows; A0 is English-only.
+            tt = fit_probe(X[fit], 1 - y[fit], C)
+            a2 = fit_procrustes(Xen[fit], X[fit], 1 - yen[fit], k_pc, C)
+            ms = {"a0": a0.score(X), "tt": tt.score(X), "a2": a2.score(X)}
+            for m, s in ms.items():
+                auc_test = round(auc(s[test], y[test]), 4)      # honest: TEST only
+                rows.append({"lang": lang, "method": m, "budget": 0, "auc": auc_test,
+                             **certify(s, y, cal, test, alpha_miss, alpha_flag)})
+            # Few-shot on the same TT score: k labels/class from CAL, macro-F1 threshold.
+            s_tt, cal_ref, cal_com = ms["tt"], np.flatnonzero(cal & (y == 1)), np.flatnonzero(cal & (y == 0))
+            auc_tt = round(auc(s_tt[test], y[test]), 4)
             for kb in BUDGETS:
-                # draw k labeled harmful + k harmless from the calibration pool
-                ci_ref = ref[:cal_ref_n]
-                ci_com = com[:cal_com_n]
-                if kb > min(len(ci_ref), len(ci_com)):
+                if kb > min(len(cal_ref), len(cal_com)):
                     continue
-                thr = fewshot_threshold(s_tt[rng.choice(ci_ref, kb, replace=False)],
-                                        s_tt[rng.choice(ci_com, kb, replace=False)])
+                thr = fewshot_threshold(s_tt[rng.choice(cal_ref, kb, replace=False)],
+                                        s_tt[rng.choice(cal_com, kb, replace=False)])
                 st, yt = s_tt[test], y[test]
-                miss = float((st[yt == 1] < thr).mean())
-                flag = float((st[yt == 0] > thr).mean())
-                rows.append({"lang": lang, "method": "fewshot", "budget": kb, "auc": aucs["tt"],
-                             "miss2": miss, "flag2": flag, "feasible3": False,
-                             "miss3": float("nan"), "flag3": float("nan"), "defer": float("nan")})
+                rows.append({"lang": lang, "method": "fewshot", "budget": kb, "auc": auc_tt,
+                             "miss2": float((st[yt == 1] < thr).mean()),
+                             "flag2": float((st[yt == 0] > thr).mean()),
+                             "feasible3": False, "miss3": float("nan"),
+                             "flag3": float("nan"), "defer": float("nan")})
     return rows
+
+
+def _split(n, idx_ref, idx_com, rng, fractions=(0.4, 0.3, 0.3)):
+    """Disjoint fit/cal/test boolean masks, each class split by the same fractions."""
+    fit = np.zeros(n, bool)
+    cal = np.zeros(n, bool)
+    test = np.zeros(n, bool)
+    for idx in (idx_ref, idx_com):
+        p = rng.permutation(idx)
+        a = round(fractions[0] * len(p))
+        b = a + round(fractions[1] * len(p))
+        fit[p[:a]] = True
+        cal[p[a:b]] = True
+        test[p[b:]] = True
+    return fit, cal, test
 
 
 def summarize(rows):
